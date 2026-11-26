@@ -1,198 +1,533 @@
 #!/usr/bin/env python3
-"""News Image 20261125 — deterministic PNG renderer (stdlib only)."""
-import os, struct, zlib
+"""News Image 20261125 - one-image world news summary for Wednesday 25 Nov 2026.
 
-W = H = 1024
-NAVY=(10,24,58); RED=(196,30,42); GOLD=(245,176,0); PAPER=(250,246,235); INK=(18,20,28)
-BLUE=(22,92,180); TEAL=(0,150,150); GREEN=(24,140,70); ORANGE=(238,110,20); PURPLE=(112,60,180)
-PINK=(215,60,110); SKY=(120,200,240); SAND=(240,205,120); GRAY=(95,100,110); WHITE=(255,255,255)
+Deterministic stdlib-only renderer. Draws at 2048x2048 and box-downsamples to
+1024x1024 for smooth edges, then writes a PNG with a hand-rolled encoder.
+No network, no randomness, no clock reads: two runs are byte-identical.
+"""
 
-FONT={
-'A':[".###.","#...#","#...#","#####","#...#","#...#","#...#"],'B':["####.","#...#","#...#","####.","#...#","#...#","####."],
-'C':[".####","#....","#....","#....","#....","#....",".####"],'D':["####.","#...#","#...#","#...#","#...#","#...#","####."],
-'E':["#####","#....","#....","####.","#....","#....","#####"],'F':["#####","#....","#....","####.","#....","#....","#...."],
-'G':[".####","#....","#....","#.###","#...#","#...#",".###."],'H':["#...#","#...#","#...#","#####","#...#","#...#","#...#"],
-'I':["#####","..#..","..#..","..#..","..#..","..#..","#####"],'J':["..###","...#.","...#.","...#.","...#.","#..#.",".##.."],
-'K':["#...#","#..#.","#.#..","##...","#.#..","#..#.","#...#"],'L':["#....","#....","#....","#....","#....","#....","#####"],
-'M':["#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"],'N':["#...#","##..#","#.#.#","#..##","#...#","#...#","#...#"],
-'O':[".###.","#...#","#...#","#...#","#...#","#...#",".###."],'P':["####.","#...#","#...#","####.","#....","#....","#...."],
-'Q':[".###.","#...#","#...#","#...#","#.#.#","#..#.",".##.#"],'R':["####.","#...#","#...#","####.","#.#..","#..#.","#...#"],
-'S':[".####","#....","#....",".###.","....#","....#","####."],'T':["#####","..#..","..#..","..#..","..#..","..#..","..#.."],
-'U':["#...#","#...#","#...#","#...#","#...#","#...#",".###."],'V':["#...#","#...#","#...#","#...#","#...#",".#.#.","..#.."],
-'W':["#...#","#...#","#...#","#.#.#","#.#.#","##.##","#...#"],'X':["#...#",".#.#.","..#..","..#..","..#..",".#.#.","#...#"],
-'Y':["#...#","#...#",".#.#.","..#..","..#..","..#..","..#.."],'Z':["#####","....#","...#.","..#..",".#...","#....","#####"],
-'0':[".###.","#..##","#.#.#","##..#","#...#","#...#",".###."],'1':["..#..",".##..","..#..","..#..","..#..","..#..","#####"],
-'2':[".###.","#...#","....#","...#.","..#..",".#...","#####"],'3':["#####","...#.","..#..","...#.","....#","#...#",".###."],
-'4':["...#.","..##.",".#.#.","#..#.","#####","...#.","...#."],'5':["#####","#....","####.","....#","....#","#...#",".###."],
-'6':[".###.","#....","#....","####.","#...#","#...#",".###."],'7':["#####","....#","...#.","..#..","..#..","..#..","..#.."],
-'8':[".###.","#...#","#...#",".###.","#...#","#...#",".###."],'9':[".###.","#...#","#...#",".####","....#","....#",".###."],
-' ':["....."]*7,'.':[".....",".....",".....",".....",".....",".##..",".##.."],',':[".....",".....",".....",".....",".##..",".##..",".#..."],
-':':[".....",".##..",".##..",".....",".##..",".##..","....."],';':[".....",".##..",".##..",".....",".##..",".##..",".#..."],
-"'":["..#..","..#..",".#...",".....",".....",".....","....."],'"':[".#.#.",".#.#.",".....",".....",".....",".....","....."],
-'-':[".....",".....",".....","#####",".....",".....","....."],'/':["....#","...#.","...#.","..#..",".#...",".#...","#...."],
-'%':["##..#","##.#.","...#.","..#..",".#...",".#.##","#..##"],'$':["..#..",".####","#.#..",".###.","..#.#","####.","..#.."],
-'+':[".....","..#..","..#..","#####","..#..","..#..","....."],'(':["...#.","..#..",".#...",".#...",".#...","..#..","...#."],
-')':[".#...","..#..","...#.","...#.","...#.","..#..",".#..."],'!':["..#..","..#..","..#..","..#..","..#..",".....","..#.."],
-'?':[".###.","#...#","....#","...#.","..#..",".....","..#.."],'&':[".##..","#..#.","#.#..",".#...","#.#.#","#..#.",".##.#"]}
+import os
+import struct
+import zlib
+from pathlib import Path
 
-class Canvas:
-    def __init__(self): self.px=bytearray(W*H*3)
-    def set(self,x,y,c):
-        if 0<=x<W and 0<=y<H:
-            i=(y*W+x)*3; self.px[i:i+3]=bytes(c)
-    def rect(self,x,y,w,h,c):
-        for yy in range(y,y+h):
-            for xx in range(x,x+w): self.set(xx,yy,c)
-    def circle(self,cx,cy,r,c):
-        for yy in range(cy-r,cy+r+1):
-            for xx in range(cx-r,cx+r+1):
-                if (xx-cx)**2+(yy-cy)**2<=r*r: self.set(xx,yy,c)
-    def ring(self,cx,cy,r,c,t=3):
-        for yy in range(cy-r,cy+r+1):
-            for xx in range(cx-r,cx+r+1):
-                d=(xx-cx)**2+(yy-cy)**2
-                if (r-t)**2<=d<=r*r: self.set(xx,yy,c)
-    def line(self,x1,y1,x2,y2,c,t=3):
-        steps=max(abs(x2-x1),abs(y2-y1),1)
-        for i in range(steps+1):
-            x=x1+(x2-x1)*i//steps; y=y1+(y2-y1)*i//steps
-            self.rect(x-t//2,y-t//2,t,t,c)
-    def poly(self,pts,c):
-        ys=[p[1] for p in pts]
-        for y in range(min(ys),max(ys)+1):
-            xs=[]
-            for i in range(len(pts)):
-                x1,y1=pts[i]; x2,y2=pts[(i+1)%len(pts)]
-                if (y1<=y<y2) or (y2<=y<y1): xs.append(x1+(y-y1)*(x2-x1)//(y2-y1))
-            xs.sort()
-            for i in range(0,len(xs)-1,2): self.rect(xs[i],y,xs[i+1]-xs[i]+1,1,c)
-    def text(self,x,y,s,scale,c):
-        cx=x
-        for ch in s.upper():
-            g=FONT.get(ch,FONT[' '])
-            for ry,row in enumerate(g):
-                for rx,v in enumerate(row):
-                    if v=='#': self.rect(cx+rx*scale,y+ry*scale,scale,scale,c)
-            cx+=6*scale
-        return cx-x
-    def tw(self,s,scale): return len(s)*6*scale-scale
-    def ctext(self,cx,y,s,scale,c): self.text(cx-self.tw(s,scale)//2,y,s,scale,c)
-    def png(self):
-        raw=bytearray()
-        for y in range(H): raw.append(0); raw+=self.px[y*W*3:(y+1)*W*3]
-        def chunk(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
-        ihdr=struct.pack('>IIBBBBB',W,H,8,2,0,0,0)
-        return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',ihdr)+chunk(b'IDAT',zlib.compress(bytes(raw),9))+chunk(b'IEND',b'')
+SS = 2
+W = 1024
+H = 1024
+CW = W * SS
+CH = H * SS
 
-def badge(cv,x,y,num,c=RED):
-    cv.circle(x+16,y+16,16,c); s=str(num); cv.text(x+16-cv.tw(s,2)//2,y+9,s,2,WHITE)
-def pill(cv,x,y,s,c):
-    w=cv.tw(s,1)+12; cv.rect(x,y,w,16,c); cv.text(x+6,y+4,s,1,WHITE); return w
-def pictogram(cv,sid,x,y,w,h):
-    bg={1:NAVY,2:GOLD,3:TEAL,4:GREEN,5:SKY,6:ORANGE,7:RED,8:PURPLE,9:NAVY,10:BLUE,11:PINK,12:ORANGE,13:GREEN}[sid]
-    cv.rect(x,y,w,h,bg); cx=x+w//2; cy=y+h//2; u=max(2,min(w,h)//18)
-    if sid==1:
-        cv.poly([(cx-8*u,cy-9*u),(cx+8*u,cy-9*u),(cx+8*u,cy+2*u),(cx,cy+10*u),(cx-8*u,cy+2*u)],SKY)
-        cv.line(cx-5*u,cy-5*u,cx+4*u,cy+4*u,RED,3*u); cv.line(cx+5*u,cy-6*u,cx-3*u,cy+5*u,RED,3*u)
-    elif sid==2:
-        cv.rect(cx-2*u,cy-9*u,4*u,12*u,NAVY); cv.line(cx-9*u,cy-6*u,cx+9*u,cy-6*u,NAVY,3*u)
-        cv.poly([(cx-10*u,cy+4*u),(cx-4*u,cy+4*u),(cx-7*u,cy-3*u)],RED); cv.poly([(cx+4*u,cy+4*u),(cx+10*u,cy+4*u),(cx+7*u,cy-3*u)],RED)
-        cv.rect(cx-9*u,cy+7*u,18*u,3*u,NAVY)
-    elif sid==3:
-        cv.poly([(cx-10*u,cy+3*u),(cx+10*u,cy+3*u),(cx+6*u,cy+8*u),(cx-6*u,cy+8*u)],WHITE)
-        cv.rect(cx-1*u,cy-8*u,2*u,11*u,WHITE); cv.poly([(cx+1*u,cy-8*u),(cx+1*u,cy+2*u),(cx+8*u,cy+2*u)],GOLD)
-        for i in range(3): cv.line(x+6+i*4*u,cy+11*u,x+16+i*4*u,cy+9*u,WHITE,2*u)
-    elif sid==4:
-        cv.circle(cx,cy,7*u,WHITE); cv.circle(cx,cy,3*u,RED)
-        for dx,dy in [(-9,-6),(9,-6),(-10,5),(10,5),(0,-11),(0,11)]: cv.circle(cx+dx*u,cy+dy*u,2*u,WHITE)
-    elif sid==5:
-        cv.rect(cx-8*u,cy-3*u,13*u,6*u,WHITE); cv.poly([(cx+5*u,cy-2*u),(cx+12*u,cy-5*u),(cx+12*u,cy+1*u),(cx+5*u,cy+2*u)],WHITE)
-        cv.line(cx-11*u,cy-8*u,cx+11*u,cy-8*u,NAVY,2*u); cv.line(cx-4*u,cy+5*u,cx+6*u,cy+5*u,NAVY,2*u)
-    elif sid==6:
-        cv.rect(cx-9*u,cy-8*u,18*u,16*u,WHITE); cv.rect(cx-3*u,cy-2*u,6*u,10*u,TEAL); cv.rect(cx-9*u,cy-11*u,18*u,3*u,RED)
-    elif sid==7:
-        cv.rect(cx-8*u,cy-2*u,16*u,9*u,WHITE); cv.rect(cx-5*u,cy-8*u,4*u,6*u,WHITE); cv.rect(cx+2*u,cy-10*u,4*u,8*u,WHITE)
-        cv.poly([(cx,cy-13*u),(cx+5*u,cy-4*u),(cx-5*u,cy-4*u)],GOLD)
-    elif sid==8:
-        cv.rect(cx-7*u,cy-10*u,14*u,20*u,WHITE)
-        for i in range(4): cv.rect(cx-4*u,cy-6*u+i*4*u,8*u,2*u,PURPLE)
-        cv.rect(cx-4*u,cy+6*u,8*u,3*u,RED)
-    elif sid==9:
-        cv.circle(cx-5*u,cy-3*u,4*u,GOLD); cv.circle(cx+5*u,cy-4*u,3*u,SKY); cv.circle(cx,cy+5*u,3*u,PINK)
-        cv.ring(cx,cy,10*u,WHITE,2*u)
-    elif sid==10:
-        for i in range(3): cv.rect(cx-8*u,cy-8*u+i*6*u,16*u,4*u,WHITE); cv.circle(cx+5*u,cy-6*u+i*6*u,1*u,GREEN)
-    elif sid==11:
-        cv.line(cx-9*u,cy-6*u,cx-3*u,cy+1*u,WHITE,3*u); cv.line(cx-3*u,cy+1*u,cx+2*u,cy-3*u,WHITE,3*u); cv.line(cx+2*u,cy-3*u,cx+9*u,cy+7*u,WHITE,3*u)
-        cv.poly([(cx+9*u,cy+8*u),(cx+4*u,cy+7*u),(cx+8*u,cy+3*u)],WHITE)
-    elif sid==12:
-        cv.circle(cx-5*u,cy,5*u,WHITE); cv.circle(cx+5*u,cy,5*u,TEAL); cv.rect(cx-2*u,cy-2*u,4*u,4*u,GOLD)
-    else:
-        cv.circle(cx,cy,9*u,WHITE); cv.poly([(cx,cy-4*u),(cx+4*u,cy),(cx,cy+4*u),(cx-4*u,cy)],INK)
-        for dx,dy in [(-7,-6),(7,-6),(-7,6),(7,6)]: cv.circle(cx+dx*u,cy+dy*u,2*u,INK)
+INK = (24, 26, 34)
+PAPER = (247, 243, 234)
+RED = (178, 34, 44)
+NAVY = (18, 38, 74)
+TEAL = (10, 110, 120)
+GOLD = (214, 154, 32)
+GREEN = (38, 128, 74)
+SKY = (126, 184, 224)
+SAND = (222, 198, 150)
+GREY = (96, 100, 110)
+WHITE = (255, 255, 255)
+BLACK = (10, 10, 12)
 
-LEADS=[
-(1,["CIA SYSTEM","BREACHED"],"ODNI ALSO HIT","NO SECRETS TAKEN","CIA","US INTEL","AP","CONFIRMED"),
-(2,["HUAWEI GUILTY","10 OF 12 COUNTS"],"BROOKLYN COURT","CRIMINAL CASE","10/12","US COURTS","REUTERS","CONFIRMED"),
-(3,["175 MIGRANTS","MISSING"],"BOAT LOST FROM DAKAR","CONTACT LOST","175","SENEGAL","REUTERS","CONFIRMED")]
-MEDIUMS=[
-(4,["CONGO REBELS HALT","EBOLA TEAM OUT"],"DR CONGO","BBC/WHO","CONFIRMED"),
-(5,["TURKISH COPTER DOWN","5 SOLDIERS DEAD"],"TURKEY","REUTERS","CONFIRMED"),
-(6,["CARTAGENA SIEGE ENDS","HOSTAGES FREE"],"COLOMBIA","AP","CONFIRMED"),
-(7,["PUTIN VOWS REVENGE","REFINERY STRIKES"],"RUSSIA","WIRE","REPORTED"),
-(8,["LEAKED RUSSIAN FILE","720,000 WAR DEAD"],"RUSSIA","LEAK","REPORTED"),
-(9,["IMPOSSIBLE TRIPLE STAR","28 LIGHT YEARS"],"SPACE","IAC","CONFIRMED"),
-(10,["DELL AI SALES DOUBLE","$25B BUYBACK"],"MARKETS","BARRON'S","CONFIRMED"),
-(11,["NASDAQ -1.48%","NVIDIA +31.5% ERASED"],"MARKETS","REUTERS","CONFIRMED"),
-(12,["BJP-AKALI REUNITE","PUNJAB ELECTION"],"INDIA","TIMES OF INDIA","CONFIRMED"),
-(13,["REAL MADRID 5-1 PSV","FULL TIME"],"FOOTBALL","SCORE","CONFIRMED")]
-ALSO=["ENGLAND WIN BY 8 WICKETS","TRUMP TEAM SPLIT ON IRAN","RIYADH TOWER HIT, 11 HURT","O'HARE TRAVEL CHAOS","MODI-MERZ: INDIA-GERMANY","MEDICINE SHORTAGES IN IRAN","NATO EARLY-WARNING JETS","VENEZUELA DEBT $237.5B"]
-DATECHECK=["SOORYAVANSHI 204: 24 NOV","NEPAL QUAKE 5.3: 24 NOV","LANDMINE REPORT: 24 NOV","ALL EXCLUDED"]
-PINS={1:(140,84),2:(160,100),3:(120,150),4:(152,182),5:(202,108),6:(74,154),7:(230,66),8:(244,86),9:(266,36),10:(126,116),11:(146,128),12:(226,146),13:(180,92)}
+FONT = {
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
+    "D": ("11100", "10010", "10001", "10001", "10001", "10010", "11100"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
+    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
+    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "10101", "01010"),
+    "X": ("10001", "01010", "00100", "00100", "00100", "01010", "10001"),
+    "Y": ("10001", "01010", "00100", "00100", "00100", "00100", "00100"),
+    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
+    "3": ("11111", "00010", "00100", "00010", "00001", "10001", "01110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+    " ": ("00000",) * 7,
+    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    ",": ("00000", "00000", "00000", "00000", "01100", "00100", "01000"),
+    ":": ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    "'": ("00100", "00100", "01000", "00000", "00000", "00000", "00000"),
+    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    "·": ("00000", "00000", "00000", "01100", "00000", "00000", "00000"),
+    "$": ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
+    "%": ("11001", "11010", "00010", "00100", "01000", "01011", "10011"),
+    "+": ("00000", "00100", "00100", "01110", "00100", "00100", "00000"),
+    "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    "(": ("00010", "00100", "01000", "01000", "01000", "00100", "00010"),
+    ")": ("01000", "00100", "00010", "00010", "00010", "00100", "01000"),
+    "!": ("00100", "00100", "00100", "00100", "00100", "00000", "00100"),
+    "?": ("01110", "10001", "00001", "00110", "00100", "00000", "00100"),
+    "&": ("01100", "10010", "10100", "01000", "10101", "10010", "01101"),
+}
 
-def draw():
-    cv=Canvas(); cv.rect(0,0,W,H,PAPER)
-    cv.rect(0,0,W,132,NAVY); cv.rect(0,132,W,30,RED)
-    cv.text(24,14,"WEDNESDAY",3,GOLD); cv.text(24,44,"25 NOVEMBER 2026",7,WHITE)
-    cv.text(760,22,"WORLD",4,WHITE); cv.text(760,58,"BRIEF",4,GOLD); cv.text(760,96,"ONE DAY",2,SKY)
-    cv.text(24,140,"35 STORIES",3,WHITE); cv.rect(250,148,10,10,GOLD); cv.text(276,140,"15 MAP PINS",3,WHITE)
-    cv.text(760,140,"13 NUMBERED",3,WHITE)
-    for i,(sid,lines,sub,sub2,key,region,src,cert) in enumerate(LEADS):
-        x=16+i*336; y=172; cv.rect(x,y,320,258,WHITE); cv.rect(x,y,320,6,RED)
-        pictogram(cv,sid,x+10,y+12,190,104); badge(cv,x+8,y+8,sid)
-        cv.text(x+(200 if len(key)>3 else 208),y+18,key,4 if len(key)>3 else 5,RED); cv.text(x+208,y+66,region,2,NAVY)
-        yy=y+128
-        for ln in lines: cv.text(x+12,yy,ln,3,INK); yy+=30
-        cv.text(x+12,yy,sub,2,BLUE); cv.text(x+12,yy+24,sub2,2,GRAY)
-        pill(cv,x+12,y+226,cert,GREEN if cert=="CONFIRMED" else ORANGE); cv.text(x+150,y+230,src,2,INK)
-    for i,(sid,lines,region,src,cert) in enumerate(MEDIUMS):
-        col=i//5; row=i%5; x=16+col*332; y=442+row*64
-        cv.rect(x,y,324,58,WHITE); cv.rect(x,y,5,58,BLUE if cert=="CONFIRMED" else ORANGE)
-        pictogram(cv,sid,x+8,y+4,50,50); badge(cv,x+4,y+2,sid,NAVY)
-        cv.text(x+64,y+6,lines[0],2,INK); cv.text(x+64,y+26,lines[1],2,INK)
-        cv.text(x+64,y+46,region+"  "+src,1,GRAY); pill(cv,x+246,y+40,cert,GREEN if cert=="CONFIRMED" else ORANGE)
-    mx,my=688,442; cv.rect(mx,my,320,314,NAVY); cv.text(mx+14,my+10,"WORLD MAP",3,GOLD)
-    cv.poly([(mx+28,my+96),(mx+96,my+70),(mx+132,my+96),(mx+104,my+142),(mx+52,my+150)],SKY)
-    cv.poly([(mx+72,my+160),(mx+112,my+160),(mx+104,my+224),(mx+78,my+232)],SAND)
-    cv.poly([(mx+142,my+86),(mx+238,my+62),(mx+292,my+92),(mx+252,my+150),(mx+176,my+146)],SKY)
-    cv.poly([(mx+150,my+150),(mx+196,my+150),(mx+190,my+226),(mx+158,my+220)],SAND)
-    cv.poly([(mx+238,my+170),(mx+282,my+176),(mx+276,my+214),(mx+244,my+208)],SKY)
-    for sid,(px,py) in PINS.items():
-        cv.circle(mx+px,my+py,11,RED); s=str(sid); cv.text(mx+px-cv.tw(s,1)//2,my+py-3,s,1,WHITE)
-    cv.text(mx+14,my+282,"PINS MATCH STORY NUMBERS",2,WHITE)
-    cv.rect(16,776,648,150,WHITE); cv.rect(16,776,648,30,NAVY); cv.text(28,784,"ALSO ON WEDNESDAY",3,GOLD)
-    for i,s in enumerate(ALSO):
-        col=i//4; row=i%4; cv.text(28+col*324,820+row*26,s,2,INK)
-    cv.rect(680,776,328,150,(255,244,200)); cv.rect(680,776,328,30,RED); cv.text(692,784,"DATE CHECK",3,WHITE)
-    for i,s in enumerate(DATECHECK): cv.text(692,820+i*30,s,2,INK)
-    cv.rect(0,942,W,82,NAVY); cv.text(24,956,"SOURCES: AP  REUTERS  BBC/WHO  IAC",3,WHITE)
-    cv.text(24,988,"BARRON'S  TIMES OF INDIA",3,GOLD); cv.text(700,970,"25 NOV 2026",4,WHITE)
-    return cv.png()
+canvas = bytearray(bytes(PAPER) * (CW * CH))
+
+
+def px(x, y, color):
+    if 0 <= x < CW and 0 <= y < CH:
+        i = (y * CW + x) * 3
+        canvas[i:i + 3] = bytes(color)
+
+
+def rect(x, y, w, h, color):
+    x0, y0 = int(x * SS), int(y * SS)
+    x1, y1 = int((x + w) * SS), int((y + h) * SS)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(CW, x1), min(CH, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    row = bytes(color) * (x1 - x0)
+    for yy in range(y0, y1):
+        i = (yy * CW + x0) * 3
+        canvas[i:i + len(row)] = row
+
+
+def vgrad(x, y, w, h, top, bottom):
+    steps = int(h * SS)
+    for s in range(steps):
+        t = s / max(1, steps - 1)
+        c = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        rect(x, y + s / SS, w, 1 / SS, c)
+
+
+def circle(cx, cy, r, color):
+    cxp, cyp, rp = cx * SS, cy * SS, r * SS
+    y0, y1 = int(cyp - rp), int(cyp + rp)
+    for yy in range(max(0, y0), min(CH, y1 + 1)):
+        dy = yy - cyp
+        span = rp * rp - dy * dy
+        if span < 0:
+            continue
+        dx = int(span ** 0.5)
+        x0 = max(0, int(cxp - dx))
+        x1 = min(CW, int(cxp + dx) + 1)
+        row = bytes(color) * (x1 - x0)
+        i = (yy * CW + x0) * 3
+        canvas[i:i + len(row)] = row
+
+
+def ellipse(cx, cy, rx, ry, color):
+    cxp, cyp = cx * SS, cy * SS
+    rxp, ryp = rx * SS, ry * SS
+    y0, y1 = int(cyp - ryp), int(cyp + ryp)
+    for yy in range(max(0, y0), min(CH, y1 + 1)):
+        dy = (yy - cyp) / ryp
+        span = 1 - dy * dy
+        if span < 0:
+            continue
+        dx = int(rxp * (span ** 0.5))
+        x0 = max(0, int(cxp - dx))
+        x1 = min(CW, int(cxp + dx) + 1)
+        row = bytes(color) * (x1 - x0)
+        i = (yy * CW + x0) * 3
+        canvas[i:i + len(row)] = row
+
+
+def line(x0, y0, x1, y1, color, thick=1.6):
+    steps = int(max(abs(x1 - x0), abs(y1 - y0)) * SS) + 1
+    r = max(1, int(thick * SS / 2))
+    for s in range(steps + 1):
+        t = s / steps
+        cx = int((x0 + (x1 - x0) * t) * SS)
+        cy = int((y0 + (y1 - y0) * t) * SS)
+        for yy in range(cy - r, cy + r + 1):
+            for xx in range(cx - r, cx + r + 1):
+                px(xx, yy, color)
+
+
+def tri(x0, y0, x1, y1, x2, y2, color):
+    miny, maxy = int(min(y0, y1, y2) * SS), int(max(y0, y1, y2) * SS)
+    pts = [(x0 * SS, y0 * SS), (x1 * SS, y1 * SS), (x2 * SS, y2 * SS)]
+
+    def edge(ax, ay, bx, by, yy):
+        if by == ay:
+            return None
+        t = (yy - ay) / (by - ay)
+        if 0 <= t <= 1:
+            return ax + (bx - ax) * t
+        return None
+
+    for yy in range(max(0, miny), min(CH, maxy + 1)):
+        xs = []
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            v = edge(pts[a][0], pts[a][1], pts[b][0], pts[b][1], yy)
+            if v is not None:
+                xs.append(v)
+        if len(xs) >= 2:
+            xlo, xhi = int(min(xs)), int(max(xs))
+            xlo, xhi = max(0, xlo), min(CW - 1, xhi)
+            row = bytes(color) * (xhi - xlo + 1)
+            i = (yy * CW + xlo) * 3
+            canvas[i:i + len(row)] = row
+
+
+def text_w(text, scale):
+    return len(text) * 6 * scale - scale
+
+
+def draw_text(x, y, text, scale, color):
+    cx = x
+    for ch in text.upper():
+        glyph = FONT.get(ch, FONT["?"])
+        for r, rowbits in enumerate(glyph):
+            for c, bit in enumerate(rowbits):
+                if bit == "1":
+                    rect(cx + c * scale, y + r * scale, scale, scale, color)
+        cx += 6 * scale
+    return cx - scale
+
+
+def draw_text_c(cx, y, text, scale, color):
+    draw_text(cx - text_w(text, scale) / 2, y, text, scale, color)
+
+
+def wrap_lines(text, scale, max_w):
+    words = text.upper().split()
+    lines, cur = [], ""
+    for word in words:
+        trial = word if not cur else cur + " " + word
+        if text_w(trial, scale) <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def draw_wrap(x, y, text, scale, color, max_w, leading=None):
+    leading = leading or (8 * scale)
+    for i, ln in enumerate(wrap_lines(text, scale, max_w)):
+        draw_text(x, y + i * leading, ln, scale, color)
+    return y + len(wrap_lines(text, scale, max_w)) * leading
+
+
+def star(cx, cy, r, color):
+    tri(cx, cy - r, cx - r * 0.32, cy + r * 0.3, cx + r * 0.32, cy + r * 0.3, color)
+    tri(cx - r, cy - r * 0.15, cx + r, cy - r * 0.15, cx, cy + r, color)
+
+
+def _sin(t):
+    import math
+    return math.sin(t)
+
+
+def _cos(t):
+    import math
+    return math.cos(t)
+
+
+def scene(kind, x, y, w, h):
+    """Multi-shape pictogram scenes inside box (x, y, w, h)."""
+    if kind == "cia":
+        vgrad(x, y, w, h, (16, 24, 52), (44, 70, 130))
+        for i in range(3):
+            bx = x + 12 + i * (w / 3)
+            rect(bx, y + h * 0.25, w / 3 - 16, h * 0.65, (70, 90, 130))
+            for r in range(4):
+                rect(bx + 5, y + h * 0.32 + r * h * 0.14, w / 3 - 26, 3, (140, 220, 255))
+        tri(x + w * 0.56, y + h * 0.08, x + w * 0.44, y + h * 0.52, x + w * 0.54, y + h * 0.52, GOLD)
+        tri(x + w * 0.54, y + h * 0.46, x + w * 0.42, y + h * 0.9, x + w * 0.62, y + h * 0.4, GOLD)
+    elif kind == "huawei":
+        vgrad(x, y, w, h, (240, 226, 190), (214, 188, 140))
+        rect(x + w * 0.18, y + h * 0.34, w * 0.64, h * 0.5, (120, 96, 64))
+        tri(x + w * 0.12, y + h * 0.34, x + w * 0.88, y + h * 0.34, x + w * 0.5, y + h * 0.12, (84, 62, 40))
+        for i in range(4):
+            rect(x + w * (0.26 + i * 0.15), y + h * 0.42, 6, h * 0.34, (240, 230, 200))
+        line(x + w * 0.62, y + h * 0.62, x + w * 0.82, y + h * 0.42, (60, 40, 24), 5)
+        rect(x + w * 0.76, y + h * 0.3, w * 0.14, h * 0.12, (60, 40, 24))
+    elif kind == "migrants":
+        vgrad(x, y, w, h * 0.55, (250, 200, 120), (250, 150, 90))
+        circle(x + w * 0.78, y + h * 0.26, h * 0.14, (255, 220, 120))
+        vgrad(x, y + h * 0.5, w, h * 0.5, (30, 110, 160), (14, 60, 110))
+        for i in range(5):
+            wy = y + h * (0.58 + i * 0.09)
+            for s in range(6):
+                line(x + 8 + s * w / 6, wy, x + 22 + s * w / 6, wy - 3, (170, 220, 250), 1.6)
+        tri(x + w * 0.3, y + h * 0.62, x + w * 0.72, y + h * 0.62, x + w * 0.62, y + h * 0.76, (90, 58, 30))
+        rect(x + w * 0.48, y + h * 0.34, 3, h * 0.28, (70, 46, 24))
+        tri(x + w * 0.51, y + h * 0.36, x + w * 0.51, y + h * 0.6, x + w * 0.66, y + h * 0.6, WHITE)
+    elif kind == "congo":
+        vgrad(x, y, w, h, (200, 226, 190), (150, 196, 140))
+        rect(x + w * 0.36, y + h * 0.22, w * 0.28, h * 0.56, WHITE)
+        rect(x + w * 0.46, y + h * 0.3, w * 0.08, h * 0.4, RED)
+        rect(x + w * 0.4, y + h * 0.44, w * 0.2, h * 0.1, RED)
+        line(x + w * 0.08, y + h * 0.5, x + w * 0.3, y + h * 0.5, NAVY, 4)
+        tri(x + w * 0.3, y + h * 0.42, x + w * 0.3, y + h * 0.58, x + w * 0.18, y + h * 0.5, NAVY)
+    elif kind == "copter":
+        vgrad(x, y, w, h, (170, 205, 235), (220, 235, 250))
+        line(x + w * 0.15, y + h * 0.2, x + w * 0.85, y + h * 0.2, INK, 2.4)
+        rect(x + w * 0.48, y + h * 0.2, 3, h * 0.1, INK)
+        ellipse(x + w * 0.5, y + h * 0.48, w * 0.2, h * 0.16, (70, 110, 70))
+        line(x + w * 0.68, y + h * 0.46, x + w * 0.92, y + h * 0.36, (70, 110, 70), 4)
+        line(x + w * 0.92, y + h * 0.28, x + w * 0.92, y + h * 0.46, INK, 2.4)
+        circle(x + w * 0.44, y + h * 0.46, h * 0.07, SKY)
+        line(x + w * 0.36, y + h * 0.66, x + w * 0.64, y + h * 0.66, INK, 2.4)
+    elif kind == "hostages":
+        vgrad(x, y, w, h, (240, 230, 210), (220, 200, 170))
+        rect(x + w * 0.16, y + h * 0.3, w * 0.68, h * 0.52, (160, 120, 80))
+        rect(x + w * 0.16, y + h * 0.22, w * 0.68, h * 0.1, RED)
+        rect(x + w * 0.44, y + h * 0.48, w * 0.14, h * 0.34, (60, 40, 24))
+        line(x + w * 0.72, y + h * 0.6, x + w * 0.8, y + h * 0.68, GREEN, 3.4)
+        line(x + w * 0.8, y + h * 0.68, x + w * 0.92, y + h * 0.46, GREEN, 3.4)
+    elif kind == "putin":
+        vgrad(x, y, w, h, (60, 50, 70), (110, 80, 90))
+        for i in range(3):
+            bx = x + w * (0.2 + i * 0.24)
+            rect(bx, y + h * 0.34, w * 0.1, h * 0.5, (140, 140, 150))
+            circle(bx + w * 0.05, y + h * 0.26, h * 0.09, (200, 200, 205))
+        tri(x + w * 0.5, y + h * 0.08, x + w * 0.4, y + h * 0.3, x + w * 0.6, y + h * 0.3, (240, 120, 40))
+        circle(x + w * 0.5, y + h * 0.24, h * 0.07, GOLD)
+    elif kind == "war":
+        vgrad(x, y, w, h, (30, 30, 40), (70, 60, 70))
+        heights = (0.3, 0.45, 0.6, 0.82)
+        for i, hh in enumerate(heights):
+            rect(x + w * (0.14 + i * 0.2), y + h * (0.88 - hh), w * 0.12, h * hh, RED if i == 3 else (150, 150, 160))
+        line(x + w * 0.1, y + h * 0.88, x + w * 0.92, y + h * 0.88, WHITE, 2)
+    elif kind == "stars":
+        vgrad(x, y, w, h, (8, 10, 34), (30, 30, 80))
+        for i in range(14):
+            px(int((x + (i * 37) % int(w)) * SS), int((y + (i * 23) % int(h)) * SS), WHITE)
+        star(x + w * 0.42, y + h * 0.5, h * 0.2, (255, 230, 150))
+        star(x + w * 0.6, y + h * 0.38, h * 0.12, (200, 220, 255))
+        star(x + w * 0.72, y + h * 0.66, h * 0.1, (255, 200, 160))
+        for s in range(60):
+            t = s / 60 * 6.28318
+            ex = x + w * 0.5 + (w * 0.36) * _cos(t)
+            ey = y + h * 0.52 + (h * 0.3) * _sin(t)
+            rect(ex, ey, 1.6, 1.6, (150, 180, 255))
+    elif kind == "dell":
+        vgrad(x, y, w, h, (20, 60, 110), (40, 110, 170))
+        for i in range(3):
+            rect(x + w * (0.16 + i * 0.24), y + h * 0.3, w * 0.16, h * 0.5, (90, 150, 200))
+            circle(x + w * (0.24 + i * 0.24), y + h * 0.42, 3, (120, 255, 170))
+        line(x + w * 0.16, y + h * 0.78, x + w * 0.5, y + h * 0.5, GOLD, 3)
+        line(x + w * 0.5, y + h * 0.5, x + w * 0.84, y + h * 0.2, GOLD, 3)
+    elif kind == "nasdaq":
+        vgrad(x, y, w, h, (240, 240, 245), (215, 220, 235))
+        line(x + w * 0.1, y + h * 0.85, x + w * 0.92, y + h * 0.85, GREY, 2)
+        line(x + w * 0.12, y + h * 0.25, x + w * 0.4, y + h * 0.4, RED, 3)
+        line(x + w * 0.4, y + h * 0.4, x + w * 0.62, y + h * 0.32, RED, 3)
+        line(x + w * 0.62, y + h * 0.32, x + w * 0.88, y + h * 0.72, RED, 3)
+        tri(x + w * 0.88, y + h * 0.78, x + w * 0.8, y + h * 0.62, x + w * 0.92, y + h * 0.6, RED)
+    elif kind == "punjab":
+        vgrad(x, y, w, h, (250, 240, 210), (240, 215, 160))
+        rect(x + w * 0.2, y + h * 0.24, 3, h * 0.56, INK)
+        rect(x + w * 0.76, y + h * 0.24, 3, h * 0.56, INK)
+        rect(x + w * 0.23, y + h * 0.26, w * 0.2, h * 0.16, (240, 130, 30))
+        rect(x + w * 0.57, y + h * 0.26, w * 0.2, h * 0.16, (40, 90, 180))
+        line(x + w * 0.43, y + h * 0.34, x + w * 0.57, y + h * 0.34, GREEN, 3)
+        circle(x + w * 0.5, y + h * 0.62, h * 0.09, GREEN)
+    elif kind == "madrid":
+        vgrad(x, y, w, h, (40, 140, 80), (24, 100, 56))
+        circle(x + w * 0.5, y + h * 0.5, h * 0.26, WHITE)
+        circle(x + w * 0.5, y + h * 0.5, h * 0.09, INK)
+        for dx, dy in ((-0.16, -0.12), (0.16, -0.12), (-0.16, 0.14), (0.16, 0.14)):
+            circle(x + w * (0.5 + dx), y + h * (0.5 + dy), h * 0.05, INK)
+        line(x + w * 0.08, y + h * 0.86, x + w * 0.92, y + h * 0.86, WHITE, 2)
+
+
+LEADS = [
+    (1, "cia", "CIA SYSTEM BREACHED", "ODNI HIT TOO", "AMERICAS", "CONFIRMED", "AP"),
+    (2, "huawei", "HUAWEI GUILTY", "10 OF 12 COUNTS", "AMERICAS-ASIA", "CONFIRMED", "REUTERS"),
+    (3, "migrants", "175 MIGRANTS MISSING", "BOAT FROM DAKAR LOST", "AFRICA", "CONFIRMED", "REUTERS"),
+]
+
+MEDIUM = [
+    (4, "congo", "CONGO REBELS PULL BACK", "AFRICA", "CONFIRMED", "BBC/WHO"),
+    (5, "copter", "TURKISH COPTER CRASH 5 DEAD", "EUROPE", "CONFIRMED", "REUTERS"),
+    (6, "hostages", "CARTAGENA HOSTAGES FREE", "AMERICAS", "CONFIRMED", "AP"),
+    (7, "putin", "PUTIN WARNS RETALIATION", "EUROPE", "REPORTED", "WIRE"),
+    (8, "war", "LEAK: 720K WAR DEAD", "EUROPE", "REPORTED", "WIRE"),
+    (9, "stars", "STAR SYSTEM SHOULD NOT EXIST", "SCIENCE", "CONFIRMED", "IAC"),
+    (10, "dell", "DELL AI SALES DOUBLE", "AMERICAS", "CONFIRMED", "BARRON'S"),
+    (11, "nasdaq", "NASDAQ FALLS 1.48%", "AMERICAS", "CONFIRMED", "REUTERS"),
+    (12, "punjab", "PUNJAB ALLIANCE REUNITES", "ASIA", "CONFIRMED", "TIMES OF INDIA"),
+    (13, "madrid", "REAL MADRID 5-1 PSV", "EUROPE", "CONFIRMED", "WIRE"),
+]
+
+PINS = {
+    1: (0.20, 0.30), 2: (0.23, 0.34), 3: (0.44, 0.46), 4: (0.53, 0.58),
+    5: (0.56, 0.34), 6: (0.24, 0.52), 7: (0.60, 0.26), 8: (0.58, 0.30),
+    9: (0.10, 0.42), 10: (0.18, 0.38), 11: (0.22, 0.32), 12: (0.68, 0.42),
+    13: (0.48, 0.34),
+}
+
+ALSO = [
+    "ENGLAND BEAT AUSTRALIA BY 8 WICKETS IN T20",
+    "TRUMP TEAM SPLIT OVER TARGETING IRAN LEADERS",
+    "HOUTHI DRONE HITS RIYADH TOWER, 11 HURT",
+    "THANKSGIVING CHAOS: O'HARE GROUND STOP",
+    "MODI-MERZ DEEPEN INDIA-GERMANY TIES",
+    "IRAN MEDICINE SHORTAGE BITES PATIENTS",
+    "NATO EARLY-WARNING JETS FOR POLAND",
+    "VENEZUELA PUBLIC DEBT $237.5 BILLION",
+]
+
+DATE_CHECK = [
+    "SOORYAVANSHI 204 OFF 53 - 24 NOV, EXCLUDED",
+    "NEPAL QUAKE 5.3 - 24 NOV, EXCLUDED",
+    "LANDMINE MONITOR - 24 NOV, EXCLUDED",
+]
+
+
+def card_frame(x, y, w, h, accent):
+    rect(x, y, w, h, WHITE)
+    rect(x, y, w, 4, accent)
+    rect(x, y + h - 2, w, 2, (200, 195, 180))
+
+
+def badge(x, y, text, color):
+    wdt = text_w(text, 1.1) + 8
+    rect(x, y, wdt, 11, color)
+    draw_text(x + 4, y + 2, text, 1.1, WHITE)
+    return x + wdt
+
+
+def render():
+    # Masthead
+    draw_text_c(W / 2, 14, "WEDNESDAY", 7.5, INK)
+    draw_text_c(W / 2, 74, "25 NOVEMBER 2026", 5.2, RED)
+    rect(24, 118, W - 48, 26, NAVY)
+    draw_text_c(W / 2, 124, "35 STORIES · 15 MAP PINS · WORLD NEWS IN ONE IMAGE", 2.0, WHITE)
+
+    # Leads
+    lead_y, lead_h = 154, 208
+    lead_w = (W - 48 - 16) / 3
+    accents = (NAVY, RED, TEAL)
+    for i, (num, kind, head, key, region, conf, src) in enumerate(LEADS):
+        x = 24 + i * (lead_w + 8)
+        card_frame(x, lead_y, lead_w, lead_h, accents[i])
+        scene(kind, x + 6, lead_y + 10, lead_w - 12, 96)
+        circle(x + 18, lead_y + 22, 11, RED)
+        draw_text_c(x + 18, lead_y + 17, str(num), 1.5, WHITE)
+        draw_wrap(x + 8, lead_y + 112, head, 2.1, INK, lead_w - 16)
+        draw_text(x + 8, lead_y + 150, key, 2.6, accents[i])
+        bx = badge(x + 8, lead_y + 178, conf, GREEN if conf == "CONFIRMED" else GOLD)
+        draw_text(bx + 5, lead_y + 180, region + " · " + src, 1.15, GREY)
+
+    # Map band
+    map_y, map_h = 372, 150
+    rect(24, map_y, W - 48, map_h, (196, 222, 240))
+    rect(24, map_y, W - 48, 3, NAVY)
+    draw_text(32, map_y + 8, "WORLD MAP - PINS MATCH STORY NUMBERS", 1.6, NAVY)
+    mx, my, mw, mh = 40, map_y + 30, W - 80, map_h - 42
+    ellipse(mx + mw * 0.17, my + mh * 0.36, mw * 0.11, mh * 0.3, SAND)
+    ellipse(mx + mw * 0.26, my + mh * 0.72, mw * 0.06, mh * 0.26, SAND)
+    ellipse(mx + mw * 0.52, my + mh * 0.3, mw * 0.07, mh * 0.22, SAND)
+    ellipse(mx + mw * 0.53, my + mh * 0.62, mw * 0.08, mh * 0.3, SAND)
+    ellipse(mx + mw * 0.72, my + mh * 0.34, mw * 0.16, mh * 0.28, SAND)
+    ellipse(mx + mw * 0.84, my + mh * 0.74, mw * 0.06, mh * 0.16, SAND)
+    for num, (fx, fy) in PINS.items():
+        cx, cy = mx + mw * fx, my + mh * fy
+        circle(cx, cy, 8.5, RED)
+        draw_text_c(cx, cy - 4, str(num), 1.15, WHITE)
+
+    # Medium grid 5 x 2
+    med_y, med_h = 532, 118
+    med_w = (W - 48 - 32) / 5
+    for i, (num, kind, head, region, conf, src) in enumerate(MEDIUM):
+        col, row = i % 5, i // 5
+        x = 24 + col * (med_w + 8)
+        y = med_y + row * (med_h + 8)
+        card_frame(x, y, med_w, med_h, TEAL if i % 2 == 0 else GOLD)
+        scene(kind, x + 5, y + 8, med_w - 10, 52)
+        circle(x + 14, y + 18, 8.5, RED)
+        draw_text_c(x + 14, y + 14, str(num), 1.15, WHITE)
+        draw_wrap(x + 6, y + 64, head, 1.25, INK, med_w - 12)
+        draw_text(x + 6, y + 102, region + " · " + src, 0.95, GREY)
+        draw_text(x + 6, y + 110, conf, 0.95, GREEN if conf == "CONFIRMED" else (170, 120, 20))
+
+    # Bottom panels
+    bot_y = 786
+    rect(24, bot_y, 600, 168, WHITE)
+    rect(24, bot_y, 600, 4, NAVY)
+    draw_text(32, bot_y + 10, "ALSO ON WEDNESDAY", 2.2, NAVY)
+    for i, item in enumerate(ALSO):
+        draw_text(32, bot_y + 36 + i * 15, "- " + item, 1.35, INK)
+    rect(632, bot_y, W - 632 - 24, 168, (250, 240, 214))
+    rect(632, bot_y, W - 632 - 24, 4, GOLD)
+    draw_text(640, bot_y + 10, "DATE CHECK", 2.2, (150, 100, 16))
+    draw_text(640, bot_y + 34, "NOT 25 NOV - EXCLUDED:", 1.3, INK)
+    for i, item in enumerate(DATE_CHECK):
+        draw_wrap(640, bot_y + 56 + i * 34, item, 1.25, INK, W - 632 - 40)
+    rect(24, 962, W - 48, 34, INK)
+    draw_text_c(W / 2, 970, "SOURCES: AP · REUTERS · BBC · WHO · IAC · BARRON'S · TIMES OF INDIA", 1.5, WHITE)
+
+
+def downsample():
+    out = bytearray(W * H * 3)
+    for y in range(H):
+        for x in range(W):
+            acc0 = acc1 = acc2 = 0
+            base = ((2 * y) * CW + 2 * x) * 3
+            for dy in (0, 1):
+                row = base + dy * CW * 3
+                for dx in (0, 3):
+                    i = row + dx
+                    acc0 += canvas[i]
+                    acc1 += canvas[i + 1]
+                    acc2 += canvas[i + 2]
+            o = (y * W + x) * 3
+            out[o] = acc0 // 4
+            out[o + 1] = acc1 // 4
+            out[o + 2] = acc2 // 4
+    return bytes(out)
+
+
+def encode_png(rgb):
+    raw = bytearray()
+    stride = W * 3
+    for y in range(H):
+        raw.append(0)
+        raw.extend(rgb[y * stride:(y + 1) * stride])
+    comp = zlib.compress(bytes(raw), 9)
+
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        c += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        return c
+
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", comp) + chunk(b"IEND", b""))
+
 
 def main():
-    out=os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    os.makedirs(out,exist_ok=True)
-    png_bytes=draw()
-    with open(os.path.join(out,"entry.png"),"wb") as f: f.write(png_bytes)
+    render()
+    png = encode_png(downsample())
+    assert len(png) <= 1024 * 1024, "entry.png exceeds 1 MiB"
+    out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / "entry.png"
+    target.write_bytes(png)
 
-if __name__=="__main__": main()
+
+if __name__ == "__main__":
+    main()
